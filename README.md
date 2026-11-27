@@ -27,15 +27,14 @@ This is Over The Air update library for `ESP32` that uses `GitHub` releases as t
 Add the following line to your `platformio.ini` file:
 
 ```ini
-; Use PlatformIO repository
 lib_deps =
-    hsun/ESP_Git_OTA
-  ; hsun/ESP32_Git_OTA ; For Old version
-
-; Use GitHub repository
-lib_deps =
-    https://github.com/Hsun1031/ESP_Git_OTA.git
+    https://github.com/dewenni/ESP_Git_OTA.git#v0.0.3
 ```
+
+This pins the tested library version. The upstream project is
+[Hsun1031/ESP_Git_OTA](https://github.com/Hsun1031/ESP_Git_OTA).
+See [changelog.md](changelog.md) for version history and [changeNew.md](changeNew.md)
+for the current release notes.
 
 ## 📝Usage
 
