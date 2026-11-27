@@ -36,7 +36,7 @@
 
     typedef struct {
         const char* login = NULL;
-        int id;
+        int id = 0;
         const char* node_id = NULL;
         const char* avatar_url = NULL;
         const char* gravatar_id = NULL;
@@ -52,20 +52,20 @@
         const char* events_url = NULL;
         const char* received_events_url = NULL;
         const char* type = NULL;
-        bool site_admin;
+        bool site_admin = false;
     } GithubAuthor;
 
     typedef struct {
         const char* url = NULL;
         const char* browser_download_url = NULL;
-        int id;
+        int id = 0;
         const char* node_id = NULL;
         const char* name = NULL;
         const char* label = NULL;
         const char* state = NULL;
         const char* content_type = NULL;
-        int size;
-        int download_count;
+        int size = 0;
+        int download_count = 0;
         const char* created_at = NULL;
         const char* updated_at = NULL;
         std::vector<GithubAuthor> uploader;
@@ -78,14 +78,14 @@
         const char* upload_url = NULL;
         const char* tarball_url = NULL;
         const char* zipball_url = NULL;
-        int id;
+        int id = 0;
         const char* node_id = NULL;
-        const char* tag_name;
+        const char* tag_name = NULL;
         const char* target_commitish = NULL;
         const char* name = NULL;
         const char* body = NULL;
-        bool draft;
-        bool prerelease;
+        bool draft = false;
+        bool prerelease = false;
         const char* created_at = NULL;
         const char* published_at = NULL;
         std::vector<GithubReleaseAsset> assets;
@@ -103,6 +103,10 @@
             GithubReleaseOTA(const char* owner, const char* repo, const char* token = (const char*)NULL);
             ~GithubReleaseOTA();
 
+            GithubReleaseOTA(const GithubReleaseOTA&) = delete;
+            GithubReleaseOTA& operator=(const GithubReleaseOTA&) = delete;
+
+            // Release client configuration; safe to call again before destruction.
             void clear();
 
             void setCa(const char* ca);
@@ -114,16 +118,18 @@
 
             GithubRelease getReleaseByTagName(const char* tagName);
 
-            GithubReleaseAsset getAssetByname(GithubRelease release, const char* name);
+            // Borrowed result: keep release alive and free only the owning release.
+            GithubReleaseAsset getAssetByname(const GithubRelease& release, const char* name);
 
-            int flashFirmware(GithubReleaseAsset asset);
-            int flashFirmware(GithubRelease release, const char* name = GITHUB_OTA_FIRMWARE_NAME);
+            int flashFirmware(const GithubReleaseAsset& asset);
+            int flashFirmware(const GithubRelease& release, const char* name = GITHUB_OTA_FIRMWARE_NAME);
 
-            int flashSpiffs(GithubReleaseAsset asset);
-            int flashSpiffs(GithubRelease release, const char* name = GITHUB_OTA_SPIFFS_NAME);
+            int flashSpiffs(const GithubReleaseAsset& asset);
+            int flashSpiffs(const GithubRelease& release, const char* name = GITHUB_OTA_SPIFFS_NAME);
 
             int flashByAssetId(int assetId, int flashType);
 
+            // Reset owned data after freeing it. Shallow copies must not be freed separately.
             void freeRelease(GithubRelease& release);
             void freeAuthor(GithubAuthor& author);
             void freeReleaseAsset(GithubReleaseAsset& asset);
@@ -132,7 +138,7 @@
 
         private:
             String connectGithub(const char* url, int *code);
-            GithubRelease makeRelease(String payload);
+            GithubRelease makeRelease(const String& payload);
     };
 
 #endif // __GITHUB_RELEASE_OTA_H__

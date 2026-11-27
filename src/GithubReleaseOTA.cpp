@@ -1,4 +1,5 @@
 #include <GithubReleaseOTA.h>
+#include <utility>
 
 /**
  * @brief Construct a new Github Release OTA object
@@ -8,6 +9,8 @@
  * @param token `const char*` Github token
  */
 GithubReleaseOTA::GithubReleaseOTA(const char* owner, const char* repo, const char* token) {
+    if (owner == NULL || repo == NULL) return;
+
     int urlSize = snprintf(NULL, 0, GITHUB_API_RELEASE_URL, owner, repo) + 1;
     this->releaseUrl = (char*)malloc(urlSize);
     if (this->releaseUrl != NULL)
@@ -31,19 +34,20 @@ GithubReleaseOTA::GithubReleaseOTA(const char* owner, const char* repo, const ch
  * @brief Destroy the Github Release OTA object
  *
  */
-GithubReleaseOTA::~GithubReleaseOTA() {
-    if (this->releaseUrl != NULL) free(this->releaseUrl);
-
-    if (this->token != NULL) free(this->token);
-
-    if (this->ca != NULL) free(this->ca);
-}
+GithubReleaseOTA::~GithubReleaseOTA() { clear(); }
 
 /**
- * @brief Destroy the Github Release OTA object
- *
+ * @brief Release client resources. Repeated calls are safe.
  */
-void GithubReleaseOTA::clear() { this->~GithubReleaseOTA(); }
+void GithubReleaseOTA::clear() {
+    free(this->releaseUrl);
+    free(this->token);
+    free(this->ca);
+    this->releaseUrl = NULL;
+    this->token = NULL;
+    this->ca = NULL;
+    this->progressCallback = nullptr;
+}
 
 /**
  * @brief Set website CA (Certificate Authority)
@@ -51,14 +55,17 @@ void GithubReleaseOTA::clear() { this->~GithubReleaseOTA(); }
  * @param ca `const char*` Certificate Authority
  */
 void GithubReleaseOTA::setCa(const char* ca) {
-    if (this->ca != NULL) free(this->ca);
-
-    this->ca = (char*)malloc(strlen(ca) + 1);
-
-    if (this->ca != NULL)
-        strcpy(this->ca, ca);
-    else
-        ESP_LOGE("GithubReleaseOTA", "Failed to allocate memory for CA");
+    char* copy = NULL;
+    if (ca != NULL && ca[0] != '\0') {
+        copy = (char*)malloc(strlen(ca) + 1);
+        if (copy == NULL) {
+            ESP_LOGE("GithubReleaseOTA", "Failed to allocate memory for CA");
+            return;
+        }
+        strcpy(copy, ca);
+    }
+    free(this->ca);
+    this->ca = copy;
 }
 
 /**
@@ -69,7 +76,7 @@ void GithubReleaseOTA::setCa(const char* ca) {
 String GithubReleaseOTA::getLatestReleaseTag() {
     GithubRelease release = getLatestRelease();
     String tag = "";
-    if (release.name != NULL) tag = release.tag_name;
+    if (release.tag_name != NULL) tag = release.tag_name;
     freeRelease(release);
     return tag;
 }
@@ -87,11 +94,17 @@ std::vector<String> GithubReleaseOTA::getReleaseTagList() {
         String payload = connectGithub(this->releaseUrl, &code);
         if (code == HTTP_CODE_OK) {
             JsonDocument releasesList;
-            deserializeJson(releasesList, payload);
+            if (deserializeJson(releasesList, payload.c_str()) || !releasesList.is<JsonArray>()) {
+                ESP_LOGE("GithubReleaseOTA", "Invalid release list JSON");
+                return tags;
+            }
 
             JsonArray releases = releasesList.as<JsonArray>();
 
-            for (JsonObject release : releases) tags.push_back(release["tag_name"].as<String>());
+            for (JsonObjectConst release : releases) {
+                const char* tag = release["tag_name"];
+                if (tag != NULL && tag[0] != '\0') tags.push_back(String(tag));
+            }
 
             releasesList.clear();
         }
@@ -106,7 +119,8 @@ std::vector<String> GithubReleaseOTA::getReleaseTagList() {
  * @return `GithubRelease` Github Release Object
  */
 GithubRelease GithubReleaseOTA::getLatestRelease() {
-    GithubRelease release;
+    GithubRelease release{};
+    if (this->releaseUrl == NULL) return release;
 
     int urlSize = snprintf(NULL, 0, GITHUB_API_LATEST_RELEASE_URL, this->releaseUrl) + 1;
     char* url = (char*)malloc(urlSize);
@@ -132,9 +146,9 @@ GithubRelease GithubReleaseOTA::getLatestRelease() {
  * @return `GithubRelease` Github Release Object
  */
 GithubRelease GithubReleaseOTA::getReleaseByTagName(const char* tagName) {
-    GithubRelease release;
+    GithubRelease release{};
 
-    if (tagName == NULL) {
+    if (this->releaseUrl == NULL || tagName == NULL || tagName[0] == '\0') {
         return release;
     }
 
@@ -159,11 +173,13 @@ GithubRelease GithubReleaseOTA::getReleaseByTagName(const char* tagName) {
  * @param name `const char*` Asset Name
  * @return `GithubReleaseAsset` Github Release Asset Object
  */
-GithubReleaseAsset GithubReleaseOTA::getAssetByname(GithubRelease release, const char* name) {
-    GithubReleaseAsset asset;
+GithubReleaseAsset GithubReleaseOTA::getAssetByname(const GithubRelease& release, const char* name) {
+    GithubReleaseAsset asset{};
 
-    for (GithubReleaseAsset a : release.assets) {
-        if (strcmp(a.name, name) == 0) {
+    if (name == NULL) return asset;
+
+    for (const auto& a : release.assets) {
+        if (a.name != NULL && strcmp(a.name, name) == 0) {
             return a;
         }
     }
@@ -177,7 +193,7 @@ GithubReleaseAsset GithubReleaseOTA::getAssetByname(GithubRelease release, const
  * @param asset `GithubReleaseAsset` Github Release Asset Object
  * @return `int` OTA Status, `OTA_SUCCESS`:0, `OTA_NULL_URL`:1, `OTA_CONNECT_ERROR`:2, `OTA_BEGIN_ERROR`:3, `OTA_WRITE_ERROR`:4, `OTA_END_ERROR`:5
  */
-int GithubReleaseOTA::flashFirmware(GithubReleaseAsset asset) { return GithubReleaseOTA::flashByAssetId(asset.id, FLASH_TYPE_FIRMWARE); }
+int GithubReleaseOTA::flashFirmware(const GithubReleaseAsset& asset) { return GithubReleaseOTA::flashByAssetId(asset.id, FLASH_TYPE_FIRMWARE); }
 
 /**
  * @brief Flash firmware
@@ -186,7 +202,7 @@ int GithubReleaseOTA::flashFirmware(GithubReleaseAsset asset) { return GithubRel
  * @param name `const char*` Asset Name
  * @return `int` OTA Status, `OTA_SUCCESS`:0, `OTA_NULL_URL`:1, `OTA_CONNECT_ERROR`:2, `OTA_BEGIN_ERROR`:3, `OTA_WRITE_ERROR`:4, `OTA_END_ERROR`:5
  */
-int GithubReleaseOTA::flashFirmware(GithubRelease release, const char* name) {
+int GithubReleaseOTA::flashFirmware(const GithubRelease& release, const char* name) {
     GithubReleaseAsset asset = getAssetByname(release, name);
     if (asset.browser_download_url == NULL) return OTA_NULL_URL;
 
@@ -199,7 +215,7 @@ int GithubReleaseOTA::flashFirmware(GithubRelease release, const char* name) {
  * @param asset `GithubReleaseAsset` Github Release Asset Object
  * @return `int` OTA Status, `OTA_SUCCESS`:0, `OTA_NULL_URL`:1, `OTA_CONNECT_ERROR`:2, `OTA_BEGIN_ERROR`:3, `OTA_WRITE_ERROR`:4, `OTA_END_ERROR`:5
  */
-int GithubReleaseOTA::flashSpiffs(GithubReleaseAsset asset) { return GithubReleaseOTA::flashByAssetId(asset.id, FLASH_TYPE_SPIFFS); }
+int GithubReleaseOTA::flashSpiffs(const GithubReleaseAsset& asset) { return GithubReleaseOTA::flashByAssetId(asset.id, FLASH_TYPE_SPIFFS); }
 
 /**
  * @brief Flash SPIFFS
@@ -208,7 +224,7 @@ int GithubReleaseOTA::flashSpiffs(GithubReleaseAsset asset) { return GithubRelea
  * @param name `const char*` Asset Name
  * @return `int` OTA Status, `OTA_SUCCESS`:0, `OTA_NULL_URL`:1, `OTA_CONNECT_ERROR`:2, `OTA_BEGIN_ERROR`:3, `OTA_WRITE_ERROR`:4, `OTA_END_ERROR`:5
  */
-int GithubReleaseOTA::flashSpiffs(GithubRelease release, const char* name) {
+int GithubReleaseOTA::flashSpiffs(const GithubRelease& release, const char* name) {
     GithubReleaseAsset asset = getAssetByname(release, name);
     if (asset.browser_download_url == NULL) return OTA_NULL_URL;
 
@@ -223,6 +239,8 @@ int GithubReleaseOTA::flashSpiffs(GithubRelease release, const char* name) {
  * @return `int` OTA Status, `OTA_SUCCESS`:0, `OTA_NULL_URL`:1, `OTA_CONNECT_ERROR`:2, `OTA_BEGIN_ERROR`:3, `OTA_WRITE_ERROR`:4, `OTA_END_ERROR`:5
  */
 int GithubReleaseOTA::flashByAssetId(int assetId, int flashType) {
+    if (this->releaseUrl == NULL || assetId <= 0) return OTA_NULL_URL;
+
     int urlSize = snprintf(NULL, 0, GITHUB_API_RELEASE_ASSETS_URL, this->releaseUrl, String(assetId).c_str()) + 1;
     char* url = (char*)malloc(urlSize);
     if (url == NULL) {
@@ -233,12 +251,15 @@ int GithubReleaseOTA::flashByAssetId(int assetId, int flashType) {
     snprintf(url, urlSize, GITHUB_API_RELEASE_ASSETS_URL, this->releaseUrl, String(assetId).c_str());
 
     HTTPClient client;
-    if (this->ca != NULL)
-        client.begin(url, this->ca);
-    else
-        client.begin(url);
+    if (!(this->ca != NULL ? client.begin(url, this->ca) : client.begin(url))) {
+        free(url);
+        return OTA_CONNECT_ERROR;
+    }
 
-    if (token != NULL) client.setAuthorization("Bearer", token);
+    if (token != NULL) {
+        client.setAuthorizationType("Bearer");
+        client.setAuthorization(token);
+    }
     client.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     client.addHeader("Accept", GITHUB_API_RELEASE_ASSETS_ACCEPT_OCTET_STREAM);
     client.addHeader("X-GitHub-Api-Version", X_GITHUB_API_VERSION);
@@ -251,7 +272,7 @@ int GithubReleaseOTA::flashByAssetId(int assetId, int flashType) {
     }
 
     int size = client.getSize();
-    if (!Update.begin(size, flashType)) {
+    if (size <= 0 || !Update.begin(static_cast<size_t>(size), flashType)) {
         ESP_LOGE("GithubReleaseOTA", "Failed to begin OTA update");
         client.end();
         free(url);
@@ -264,23 +285,37 @@ int GithubReleaseOTA::flashByAssetId(int assetId, int flashType) {
     const size_t chunkSize = 1024;  // Set chunk size
     uint8_t buffer[chunkSize];
     int lastProgress = -1;
+    uint32_t lastDataAt = millis();
+    const uint32_t idleTimeoutMs = 30000;
+    const size_t expectedSize = static_cast<size_t>(size);
 
-    while (written < size) {
-        size_t available = stream.available();
+    while (written < expectedSize) {
+        int available = stream.available();
+        if ((!client.connected() && available <= 0) ||
+            static_cast<uint32_t>(millis() - lastDataAt) >= idleTimeoutMs) {
+            ESP_LOGE("GithubReleaseOTA", "OTA download interrupted or timed out");
+            Update.abort();
+            client.end();
+            free(url);
+            return OTA_WRITE_ERROR;
+        }
         if (available > 0) {
-            size_t readSize = stream.readBytes(buffer, min(available, chunkSize));
+            const size_t readLimit = min(min(static_cast<size_t>(available), chunkSize), expectedSize - written);
+            size_t readSize = stream.readBytes(buffer, readLimit);
             if (readSize > 0) {
                 if (Update.write(buffer, readSize) != readSize) {
                     ESP_LOGE("GithubReleaseOTA", "Error writing chunk");
+                    Update.abort();
                     client.end();
                     free(url);
                     return OTA_WRITE_ERROR;
                 }
                 written += readSize;
-                ESP_LOGI("GithubReleaseOTA", "Written %d/%d bytes", written, size);
+                lastDataAt = millis();
+                ESP_LOGD("GithubReleaseOTA", "Written %u/%d bytes", static_cast<unsigned>(written), size);
             }
 
-            int progress = (written * 100) / size;
+            int progress = static_cast<int>((static_cast<uint64_t>(written) * 100) / expectedSize);
             if (progress != lastProgress) {
                 if (this->progressCallback) {
                     this->progressCallback(progress);
@@ -293,6 +328,7 @@ int GithubReleaseOTA::flashByAssetId(int assetId, int flashType) {
 
     if (!Update.end()) {
         ESP_LOGE("GithubReleaseOTA", "Failed to end OTA update");
+        Update.abort();
         client.end();
         free(url);
         return OTA_END_ERROR;
@@ -331,6 +367,7 @@ void GithubReleaseOTA::freeRelease(GithubRelease& release) {
     for (auto& asset : release.assets) {
         freeReleaseAsset(asset);
     }
+    release = {};
 }
 
 /**
@@ -348,6 +385,8 @@ void GithubReleaseOTA::freeReleaseAsset(GithubReleaseAsset& asset) {
     if (asset.created_at != NULL) free((void*)asset.created_at);
     if (asset.updated_at != NULL) free((void*)asset.updated_at);
     if (asset.browser_download_url != NULL) free((void*)asset.browser_download_url);
+    for (auto& uploader : asset.uploader) freeAuthor(uploader);
+    asset = {};
 }
 
 /**
@@ -372,6 +411,7 @@ void GithubReleaseOTA::freeAuthor(GithubAuthor& author) {
     if (author.events_url != NULL) free((void*)author.events_url);
     if (author.received_events_url != NULL) free((void*)author.received_events_url);
     if (author.type != NULL) free((void*)author.type);
+    author = {};
 }
 
 /**
@@ -383,16 +423,17 @@ void GithubReleaseOTA::freeAuthor(GithubAuthor& author) {
  */
 String GithubReleaseOTA::connectGithub(const char* url, int* code) {
     HTTPClient http;
-    if (this->ca != NULL)
-        http.begin(url, this->ca);
-    else
-        http.begin(url);
+    *code = 0;
+    if (url == NULL || !(this->ca != NULL ? http.begin(url, this->ca) : http.begin(url))) return String();
     http.addHeader("Accept", GITHUB_API_RELEASE_ASSETS_ACCEPT_JSON);
     http.addHeader("X-GitHub-Api-Version", X_GITHUB_API_VERSION);
-    if (this->token != NULL) http.setAuthorization("Bearer", this->token);
+    if (this->token != NULL) {
+        http.setAuthorizationType("Bearer");
+        http.setAuthorization(this->token);
+    }
 
     *code = http.GET();
-    String payload = http.getString();
+    String payload = *code == HTTP_CODE_OK ? http.getString() : String();
 
     http.end();
 
@@ -405,17 +446,25 @@ String GithubReleaseOTA::connectGithub(const char* url, int* code) {
  * @param payload `String` Github Release JSON payload
  * @return `GithubRelease` Github Release Object
  */
-GithubRelease GithubReleaseOTA::makeRelease(String payload) {
-    GithubRelease githubRelease;
+GithubRelease GithubReleaseOTA::makeRelease(const String& payload) {
+    GithubRelease githubRelease{};
     JsonDocument releases;
-    deserializeJson(releases, payload);
+    if (deserializeJson(releases, payload.c_str()) || !releases.is<JsonObject>() ||
+        !releases["tag_name"].is<const char*>() ||
+        releases["tag_name"].as<const char*>()[0] == '\0' ||
+        !releases["assets"].is<JsonArray>()) {
+        ESP_LOGE("GithubReleaseOTA", "Invalid release JSON");
+        return githubRelease;
+    }
 
-    auto copyString = [](const char* str) -> char* {
-        if (str == nullptr) return nullptr;
+    bool allocationFailed = false;
+    auto copyString = [&allocationFailed](const char* str) -> char* {
+        if (str == nullptr || allocationFailed) return nullptr;
         char* copy = (char*)malloc(strlen(str) + 1);
         if (copy != nullptr) {
             strcpy(copy, str);
         } else {
+            allocationFailed = true;
             ESP_LOGE("GithubReleaseOTA", "Failed to allocate memory for string");
         }
         return copy;
@@ -438,9 +487,8 @@ GithubRelease GithubReleaseOTA::makeRelease(String payload) {
     githubRelease.created_at = copyString(releases["created_at"]);
     githubRelease.published_at = copyString(releases["published_at"]);
 
-    JsonArray author = releases["author"].as<JsonArray>();
-    for (JsonObject author : author) {
-        GithubAuthor githubAuthor;
+    auto parseAuthor = [&copyString](JsonObjectConst author) -> GithubAuthor {
+        GithubAuthor githubAuthor{};
 
         githubAuthor.login = copyString(author["login"]);
         githubAuthor.id = author["id"];
@@ -461,14 +509,22 @@ GithubRelease GithubReleaseOTA::makeRelease(String payload) {
         githubAuthor.type = copyString(author["type"]);
         githubAuthor.site_admin = author["site_admin"];
 
-        githubRelease.author.push_back(githubAuthor);
+        return githubAuthor;
+    };
+    if (releases["author"].is<JsonObject>()) {
+        githubRelease.author.push_back(parseAuthor(releases["author"].as<JsonObjectConst>()));
     }
 
-    author.clear();
-
     JsonArray assets = releases["assets"].as<JsonArray>();
-    for (JsonObject asset : assets) {
-        GithubReleaseAsset githubAsset;
+    bool invalidAsset = false;
+    for (JsonObjectConst asset : assets) {
+        const char* name = asset["name"];
+        const char* url = asset["browser_download_url"];
+        if (name == NULL || name[0] == '\0' || url == NULL || url[0] == '\0' || asset["id"].as<int>() <= 0) {
+            invalidAsset = true;
+            break;
+        }
+        GithubReleaseAsset githubAsset{};
 
         githubAsset.url = copyString(asset["url"]);
         githubAsset.id = asset["id"];
@@ -482,10 +538,17 @@ GithubRelease GithubReleaseOTA::makeRelease(String payload) {
         githubAsset.created_at = copyString(asset["created_at"]);
         githubAsset.updated_at = copyString(asset["updated_at"]);
         githubAsset.browser_download_url = copyString(asset["browser_download_url"]);
-        githubRelease.assets.push_back(githubAsset);
+        if (asset["uploader"].is<JsonObjectConst>()) {
+            githubAsset.uploader.push_back(parseAuthor(asset["uploader"].as<JsonObjectConst>()));
+        }
+        githubRelease.assets.push_back(std::move(githubAsset));
+        if (allocationFailed) break;
     }
 
-    assets.clear();
+    if (allocationFailed || invalidAsset) {
+        ESP_LOGE("GithubReleaseOTA", "Incomplete release data");
+        freeRelease(githubRelease);
+    }
 
     releases.clear();
 

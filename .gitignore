@@ -1,0 +1,11 @@
+# PlatformIO build output
+.pio/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local editor and macOS files
+.vscode/
+.idea/
+.DS_Store

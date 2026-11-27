@@ -41,6 +41,7 @@ void setup() {
             readyForUpdate = true;
         } else {
             Serial.println("Failed to get latest release");
+            ota.freeRelease(release);
             readyForUpdate = false;
         }
     }
